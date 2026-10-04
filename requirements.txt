@@ -1,0 +1,2 @@
+streamlit>=1.30
+markitdown[pdf,docx,pptx,xlsx]>=0.1.0
