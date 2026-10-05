@@ -13,4 +13,4 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - run: python -m py_compile app.py
-      - run: pip install ruff && ruff check app.py
+      - run: pip install "ruff==0.14.5" && ruff check app.py
