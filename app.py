@@ -1,3 +1,4 @@
+import re
 import tempfile
 from pathlib import Path
 
@@ -9,17 +10,31 @@ st.set_page_config(page_title="Archivo → Markdown", page_icon="📄", layout="
 st.title("📄 Archivo → Markdown")
 st.markdown(
     "Sube un **PDF, Word (.docx) o PowerPoint (.pptx)** y conviértelo a Markdown. "
-    "Conversión **100% local y gratis** con [MarkItDown de Microsoft](https://github.com/microsoft/markitdown.git). "
+    "Conversión con [MarkItDown de Microsoft](https://github.com/microsoft/markitdown.git). "
     "**No necesitas ninguna API ni clave.**"
 )
 
-SUPPORTED = ["pdf", "docx", "doc", "pptx", "xlsx", "xls", "csv", "txt", "md", "html", "htm", "png", "jpg", "jpeg"]
+# Solo formatos que funcionan en local con los extras instalados.
+# Se excluyen .doc/.xls (formatos legacy) e imágenes (sin LLM solo devuelven metadatos).
+SUPPORTED = ["pdf", "docx", "pptx", "xlsx", "csv", "txt", "md", "html", "htm"]
+MAX_MB = 50
+MAX_BYTES = MAX_MB * 1024 * 1024
+MAX_PREVIEW_CHARS = 50_000
+
+
+def sanear_nombre(nombre: str, fallback: str = "documento") -> str:
+    """Limpia el stem para usarlo como nombre de descarga."""
+    limpio = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", nombre)
+    limpio = re.sub(r"\s+", " ", limpio).strip().strip(".")
+    limpio = limpio[:100]
+    return limpio or fallback
+
 
 uploaded = st.file_uploader(
     "Sube tu archivo",
     type=SUPPORTED,
     accept_multiple_files=False,
-    help="Formatos principales: PDF, DOCX, PPTX. También: XLSX, CSV, TXT, HTML, imágenes.",
+    help=f"Formatos: PDF, DOCX, PPTX, XLSX, CSV, TXT, MD, HTML. Máximo {MAX_MB} MB.",
 )
 
 @st.cache_resource
@@ -27,7 +42,19 @@ def get_converter() -> MarkItDown:
     return MarkItDown()
 
 if uploaded is not None:
-    suffix = Path(uploaded.name).suffix or ".tmp"
+    if uploaded.size is not None and uploaded.size > MAX_BYTES:
+        st.error(
+            f"Archivo demasiado grande ({uploaded.size / 1024 / 1024:.1f} MB). "
+            f"Máximo {MAX_MB} MB."
+        )
+        st.stop()
+
+    ext = Path(uploaded.name).suffix.lower().lstrip(".")
+    if ext not in SUPPORTED:
+        st.error(f"Formato no soportado: .{ext}. Usa: {', '.join(SUPPORTED)}.")
+        st.stop()
+    suffix = f".{ext}"
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(uploaded.getbuffer())
         tmp_path = tmp.name
@@ -37,8 +64,12 @@ if uploaded is not None:
             converter = get_converter()
             result = converter.convert(tmp_path)
             md_text = result.text_content or ""
-        except Exception as e:
-            st.error(f"No se pudo convertir: {e}")
+        except Exception:
+            # Mensaje genérico: no exponer rutas /tmp ni trazas internas.
+            st.error(
+                "No se pudo convertir el archivo. Prueba con otro formato "
+                "o revisa si es un PDF escaneado sin texto."
+            )
             st.stop()
         finally:
             try:
@@ -47,7 +78,10 @@ if uploaded is not None:
                 pass
 
     if not md_text.strip():
-        st.warning("El archivo se procesó pero no se extrajo texto.")
+        st.warning(
+            "El archivo se procesó pero no se extrajo texto. "
+            "¿Es un PDF escaneado o una imagen sin OCR?"
+        )
     else:
         chars = len(md_text)
         words = len(md_text.split())
@@ -58,12 +92,20 @@ if uploaded is not None:
         c3.metric("Líneas", f"{lines:,}")
 
         st.subheader("Vista previa")
-        st.text_area("Markdown generado", md_text, height=350)
+        if chars > MAX_PREVIEW_CHARS:
+            st.info(
+                f"Vista previa truncada a {MAX_PREVIEW_CHARS:,} caracteres "
+                f"de {chars:,}. La descarga contiene el texto completo."
+            )
+            preview = md_text[:MAX_PREVIEW_CHARS]
+        else:
+            preview = md_text
+        st.text_area("Markdown generado", preview, height=350)
 
         st.download_button(
             label="⬇️ Descargar .md",
             data=md_text.encode("utf-8"),
-            file_name=f"{Path(uploaded.name).stem}.md",
+            file_name=f"{sanear_nombre(Path(uploaded.name).stem)}.md",
             mime="text/markdown",
         )
 else:
@@ -71,8 +113,11 @@ else:
 
 with st.expander("¿Necesito alguna API?"):
     st.markdown(
-        "- **No.** MarkItDown funciona en local, sin internet ni claves.\n"
-        "- Solo necesitas: `pip install markitdown[pdf,docx,pptx]`.\n"
+        "- **No.** Con esta configuración MarkItDown funciona sin internet ni claves.\n"
+        "- Solo necesitas: `pip install -r requirements.txt`.\n"
+        "- Nota: en Streamlit Cloud la conversión corre en el servidor, no en tu navegador. "
+        "El archivo no se envía a APIs de terceros.\n"
         "- Opcional (solo si quieres OCR avanzado o audio): Azure Document Intelligence, OpenAI Whisper, etc. "
-        "Para PDF/Word/PowerPoint normales no hace falta."
+        "Para PDF/Word/PowerPoint normales no hace falta.\n"
+        "- Imágenes sueltas y formatos legacy (.doc/.xls) no están soportados en esta app."
     )
